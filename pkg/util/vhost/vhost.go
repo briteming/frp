@@ -29,9 +29,11 @@ import (
 type RouteInfo string
 
 const (
-	RouteInfoURL    RouteInfo = "url"
-	RouteInfoHost   RouteInfo = "host"
-	RouteInfoRemote RouteInfo = "remote"
+	RouteInfoURL      RouteInfo = "url"
+	RouteInfoHost     RouteInfo = "host"
+	RouteInfoHTTPUser RouteInfo = "httpUser"
+	RouteInfoRemote   RouteInfo = "remote"
+	RouteInfoURLHost  RouteInfo = "urlHost"
 )
 
 type muxFunc func(net.Conn) (net.Conn, map[string]string, error)
@@ -39,6 +41,7 @@ type httpAuthFunc func(net.Conn, string, string, string) (bool, error)
 type hostRewriteFunc func(net.Conn, string) (net.Conn, error)
 type successFunc func(net.Conn) error
 
+// Muxer is only used for https and tcpmux proxy.
 type Muxer struct {
 	listener       net.Listener
 	timeout        time.Duration
@@ -49,7 +52,15 @@ type Muxer struct {
 	registryRouter *Routers
 }
 
-func NewMuxer(listener net.Listener, vhostFunc muxFunc, authFunc httpAuthFunc, successFunc successFunc, rewriteFunc hostRewriteFunc, timeout time.Duration) (mux *Muxer, err error) {
+func NewMuxer(
+	listener net.Listener,
+	vhostFunc muxFunc,
+	authFunc httpAuthFunc,
+	successFunc successFunc,
+	rewriteFunc hostRewriteFunc,
+	timeout time.Duration,
+) (mux *Muxer, err error) {
+
 	mux = &Muxer{
 		listener:       listener,
 		timeout:        timeout,
@@ -67,12 +78,13 @@ type CreateConnFunc func(remoteAddr string) (net.Conn, error)
 
 // RouteConfig is the params used to match HTTP requests
 type RouteConfig struct {
-	Domain      string
-	Location    string
-	RewriteHost string
-	Username    string
-	Password    string
-	Headers     map[string]string
+	Domain          string
+	Location        string
+	RewriteHost     string
+	Username        string
+	Password        string
+	Headers         map[string]string
+	RouteByHTTPUser string
 
 	CreateConnFn CreateConnFunc
 }
@@ -90,7 +102,7 @@ func (v *Muxer) Listen(ctx context.Context, cfg *RouteConfig) (l *Listener, err 
 		accept:      make(chan net.Conn),
 		ctx:         ctx,
 	}
-	err = v.registryRouter.Add(cfg.Domain, cfg.Location, l)
+	err = v.registryRouter.Add(cfg.Domain, cfg.Location, "", l)
 	if err != nil {
 		return
 	}
@@ -100,7 +112,7 @@ func (v *Muxer) Listen(ctx context.Context, cfg *RouteConfig) (l *Listener, err 
 func (v *Muxer) getListener(name, path string) (l *Listener, exist bool) {
 	// first we check the full hostname
 	// if not exist, then check the wildcard_domain such as *.example.com
-	vr, found := v.registryRouter.Get(name, path)
+	vr, found := v.registryRouter.Get(name, path, "")
 	if found {
 		return vr.payload.(*Listener), true
 	}
@@ -118,7 +130,7 @@ func (v *Muxer) getListener(name, path string) (l *Listener, exist bool) {
 		domainSplit[0] = "*"
 		name = strings.Join(domainSplit, ".")
 
-		vr, found = v.registryRouter.Get(name, path)
+		vr, found = v.registryRouter.Get(name, path, "")
 		if found {
 			return vr.payload.(*Listener), true
 		}
@@ -231,7 +243,7 @@ func (l *Listener) Accept() (net.Conn, error) {
 }
 
 func (l *Listener) Close() error {
-	l.mux.registryRouter.Del(l.name, l.location)
+	l.mux.registryRouter.Del(l.name, l.location, "")
 	close(l.accept)
 	return nil
 }
